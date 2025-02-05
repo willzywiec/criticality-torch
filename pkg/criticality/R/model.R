@@ -1,6 +1,6 @@
 # Model Function
 #
-#' This function builds the deep neural network metamodel architecture using Torch
+#' This function builds the deep neural network metamodel architecture using Torch.
 #' @param dataset Training and test data
 #' @param layers String that defines the deep neural network architecture (e.g., "64-64")
 #' @param loss Loss function
