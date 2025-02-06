@@ -2,7 +2,7 @@
 % Please edit documentation in R/model.R
 \name{Model}
 \alias{Model}
-\title{Model Function}
+\title{This function builds the deep neural network metamodel architecture using torch.}
 \usage{
 Model(
   dataset,
@@ -27,8 +27,8 @@ Model(
 \item{ext.dir}{External directory (full path)}
 }
 \value{
-A deep neural network metamodel of Monte Carlo radiation transport code simulation data
+A deep neural network metamodel
 }
 \description{
-This function builds the deep neural network metamodel architecture.
+This function builds the deep neural network metamodel architecture using torch.
 }

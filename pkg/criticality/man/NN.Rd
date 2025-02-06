@@ -12,7 +12,7 @@ NN(
   epochs = 1500,
   layers = "8192-256-256-256-256-16",
   loss = "sse",
-  opt.alg = "adamax",
+  opt.alg = "adam",
   learning.rate = 0.00075,
   val.split = 0.2,
   overwrite = FALSE,
