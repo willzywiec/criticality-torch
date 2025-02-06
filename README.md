@@ -1,9 +1,11 @@
-# criticality
+# criticality-torch
 
 A collection of functions for modeling fissile material operations in nuclear facilities  
+
+This version of the criticality software package has been modified to use Torch instead of Keras + TensorFlow, due to TF not supporting CUDA 11.2+ in Windows.
   
 ## Install the latest release from GitHub:  
-![R-CMD-check](https://github.com/willzywiec/criticality/workflows/R-CMD-check/badge.svg)
+![R-CMD-check](https://github.com/willzywiec/criticality-torch/workflows/R-CMD-check/badge.svg)
 ```r
-devtools::install_github('willzywiec/criticality/pkg/criticality')
+devtools::install_github('willzywiec/criticality-torch/pkg/criticality')
 ```
