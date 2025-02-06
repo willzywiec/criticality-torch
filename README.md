@@ -7,4 +7,4 @@ A collection of functions for modeling fissile material operations in nuclear fa
 ```r
 devtools::install_github('willzywiec/criticality-torch/pkg/criticality')
 ```
-This version of criticality has been modified to use Torch instead of Keras + TensorFlow, due to TF not supporting CUDA 11.2+ on Windows. These modifications were mostly performed using ChatGPT.  
+This version of criticality has been modified to use Torch instead of Keras + TensorFlow, due to TF not supporting CUDA 11.2+ on Windows. These modifications were mostly performed using Claude.  
