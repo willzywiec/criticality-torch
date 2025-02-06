@@ -113,7 +113,7 @@ NN <- function(
   }
 
   # build sum of squared errors (SSE) loss function using torch
-  if (loss == 'sse') loss <- function(y_true, y_pred) torch::sum((y_true - y_pred)^2)
+  if (tolower(loss) == 'sse')) loss <- function(y_true, y_pred) torch::sum((y_true - y_pred)^2)
 
   #
   # load metamodel
