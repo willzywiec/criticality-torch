@@ -56,7 +56,7 @@ NN <- function(
   epochs = 1500,
   layers = '8192-256-256-256-256-16',
   loss = 'sse',
-  opt.alg = 'adamax',
+  opt.alg = 'adam',
   learning.rate = 0.00075,
   val.split = 0.2,
   overwrite = FALSE,
@@ -90,9 +90,9 @@ NN <- function(
     paste0('external directory: ', ext.dir),
     paste0('training directory: ', training.dir)))
 
-#
-# check metamodel settings
-#
+  #
+  # check metamodel settings
+  #
   if (file.exists(paste0(training.dir, '/model-settings.txt'))) {
     old.settings <- utils::read.table(paste0(training.dir, '/model-settings.txt'), sep = '\n') %>% as.data.frame()
     if (!identical(new.settings[-4, ], old.settings[-4, ])) {
@@ -112,32 +112,32 @@ NN <- function(
     utils::write.table(new.settings, file = paste0(training.dir, '/model-settings.txt'), quote = FALSE, row.names = FALSE, col.names = FALSE)
   }
 
-  # build sum of squared errors (SSE) loss function
-  if (loss == 'sse') loss <- SSE <- function(y_true, y_pred) k_sum(k_pow(y_true - y_pred, 2))
+  # build sum of squared errors (SSE) loss function using torch
+  if (loss == 'sse') loss <- function(y_true, y_pred) torch::sum((y_true - y_pred)^2)
 
-#
-# load metamodel
-#
+  #
+  # load metamodel
+  #
   if (
     file.exists(paste0(training.dir, '/metamodel.RData')) &&
     identical(new.settings[-4, ], old.settings[-4, ]) &&
-    ensemble.size == dim(utils::read.csv(paste0(training.dir, '/test-mae.csv')))[1] && # check that ensemble.size is equal to the number of rows in test-mae.csv
-    ensemble.size <= length(list.files(path = model.dir)[grep('.*h5$', list.files(path = model.dir))]) && # redundant check to ensure files haven't been deleted
+    ensemble.size == dim(utils::read.csv(paste0(training.dir, '/test-mae.csv')))[1] &&  # check that ensemble.size is equal to the number of rows in test-mae.csv
+    ensemble.size <= length(list.files(path = model.dir)[grep('.*h5$', list.files(path = model.dir))]) &&  # redundant check to ensure files haven't been deleted
     reweight == FALSE) {
 
-    wt <- min.wt <- numeric() # 'min.wt' must be defined prior to loading 'metamodel.RData'
+    wt <- min.wt <- numeric()  # 'min.wt' must be defined prior to loading 'metamodel.RData'
 
-    load(paste0(training.dir, '/metamodel.RData')) # load 'min.wt'
+    load(paste0(training.dir, '/metamodel.RData'))  # load 'min.wt'
 
     metamodel <- rep(list(0), length(ensemble.size))
 
     for (i in 1:ensemble.size) {
-      metamodel[[i]] <- load_model_hdf5(paste0(remodel.dir, '/', i, '-', min.wt[[1]][[i]], '.h5'), custom_objects = c(loss = loss))
+      metamodel[[i]] <- torch::load(paste0(remodel.dir, '/', i, '-', min.wt[[1]][[i]], '.h5'))
       wt[i] <- min.wt[[2]][[i]]
     }
-#
-# train metamodel
-#
+  #
+  # train metamodel
+  #
   } else {
 
     model.files <- list.files(path = model.dir, pattern = '\\.h5$')
@@ -146,47 +146,58 @@ NN <- function(
 
     Fit <- function(dataset, model, batch.size, epochs, val.split, verbose, remodel.dir, i = NULL) {
       if (is.null(i)) {
-        model %>% keras::fit(
-          dataset$training.df,
-          dataset$training.data$keff,
-          batch_size = batch.size,
-          epochs = epochs,
-          validation_split = val.split,
-          verbose = verbose)
+        for (epoch in 1:epochs) {
+          model$train()
+          for (batch in dataset$training.df) {
+            inputs <- torch_tensor(batch$inputs)
+            targets <- torch_tensor(batch$keff)
+
+            output <- model(inputs)
+            loss_val <- loss(output, targets)
+            loss_val$backward()
+            optimizer$step()
+            optimizer$zero_grad()
+          }
+        }
       } else {
-        checkpoint <- callback_model_checkpoint(paste0(remodel.dir, '/', i, '-{epoch:1d}.h5'), monitor = 'mean_absolute_error')
-        model %>% keras::fit(
-          dataset$training.df,
-          dataset$training.data$keff,
-          batch_size = batch.size,
-          epochs = epochs / 10,
-          validation_split = val.split,
-          verbose = verbose,
-          callbacks = c(checkpoint))
+        for (epoch in 1:(epochs / 10)) {
+          model$train()
+          for (batch in dataset$training.df) {
+            inputs <- torch_tensor(batch$inputs)
+            targets <- torch_tensor(batch$keff)
+
+            output <- model(inputs)
+            loss_val <- loss(output, targets)
+            loss_val$backward()
+            optimizer$step()
+            optimizer$zero_grad()
+          }
+        }
       }
     }
 
     if (length(model.files) < ensemble.size) {
       for (i in (length(model.files) + 1):ensemble.size) {
         metamodel[[i]] <- Model(dataset, layers, loss, opt.alg, learning.rate, ext.dir)
-        history[[i]] <- Fit(dataset, metamodel[[i]], batch.size, epochs, val.split, verbose)
+        history[[i]] <- Fit(dataset, metamodel[[i]], batch.size, epochs, val.split, verbose, remodel.dir)
         Plot(i = i, history = history[[i]], plot.dir = model.dir)
-        save_model_hdf5(metamodel[[i]], paste0(model.dir, '/', i, '.h5'))
+        torch::save(metamodel[[i]], paste0(model.dir, '/', i, '.h5'))
       }
     } else {
       model.files <- list.files(path = model.dir, pattern = '\\.h5$')
       for (i in 1:ensemble.size) {
-        metamodel[[i]] <- load_model_hdf5(paste0(model.dir, '/', model.files[i]), custom_objects = c(loss = loss))
+        metamodel[[i]] <- torch::load(paste0(model.dir, '/', model.files[i]))
         if (replot == TRUE) Plot(i = i, plot.dir = model.dir)
       }
     }
-#
-# retrain metamodel (epochs / 10)
-#
+
+    #
+    # retrain metamodel (epochs / 10)
+    #
     remodel.files <- list.files(path = remodel.dir, pattern = '\\.h5$')
 
     history <- rep(list(0), length(ensemble.size))
-  
+
     if (length(remodel.files) < ensemble.size * epochs / 10) {
       for (i in 1:ensemble.size) {
         remodel.files <- list.files(path = remodel.dir, pattern = paste0(i, '-.+\\.h5$'))
@@ -203,7 +214,6 @@ NN <- function(
 
     # set metamodel weights, generate predictions for all training and test data, and save predictions as a .csv file
     wt <- Test(dataset, ensemble.size, loss, ext.dir, training.dir)
-
   }
 
   return(list(metamodel, wt))

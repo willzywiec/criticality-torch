@@ -1,6 +1,6 @@
 # Model Function
 #
-#' This function builds the deep neural network metamodel architecture using Torch.
+#' This function builds the deep neural network metamodel architecture using torch.
 #' @param dataset Training and test data
 #' @param layers String that defines the deep neural network architecture (e.g., "64-64")
 #' @param loss Loss function
@@ -19,10 +19,10 @@ Model <- function(dataset,
                   learning.rate = 0.00075,
                   ext.dir) {
   
-  # Parse the layers string
+  # parse the layers string
   layers <- strsplit(layers, '-') %>% unlist() %>% as.integer()
 
-  # Define the model architecture using nn.Module
+  # define the model architecture using nn.Module
   model <- nn_module(
     initialize = function() {
       self$fc1 <- nn_linear(dim(dataset$training.df)[2], layers[1])
