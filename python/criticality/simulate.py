@@ -88,17 +88,20 @@ def _fissile_material(form: str, density: float):
     return mat
 
 
-def _water():
+def _water(thermal: bool = True):
     openmc = _require_openmc()
     water = openmc.Material(name="water")
     water.add_element("H", 2.0)
     water.add_element("O", 1.0)
     water.set_density("g/cm3", WATER_DENSITY)
-    water.add_s_alpha_beta("c_H_in_H2O")
+    # Thermal scattering improves moderation accuracy but needs the c_H_in_H2O
+    # S(alpha,beta) data; disable it for a minimal (free-gas) cross-section set.
+    if thermal:
+        water.add_s_alpha_beta("c_H_in_H2O")
     return water
 
 
-def _core_material(form: str, conc: float):
+def _core_material(form: str, conc: float, thermal: bool = True):
     """Homogeneous core: fissile material at ``conc`` g/cc, water filling rest."""
     openmc = _require_openmc()
     rho_fiss = FISS_DENSITY[form]
@@ -107,7 +110,7 @@ def _core_material(form: str, conc: float):
     if vf_fiss >= 1.0:  # bare metal -- no moderator
         return fiss
     return openmc.Material.mix_materials(
-        [fiss, _water()], [vf_fiss, 1.0 - vf_fiss], "vo"
+        [fiss, _water(thermal)], [vf_fiss, 1.0 - vf_fiss], "vo"
     )
 
 
@@ -119,6 +122,7 @@ class SimSettings:
     batches: int = 130
     inactive: int = 30
     seed: int | None = None
+    thermal_scattering: bool = True  # set False for a free-gas-only data library
 
 
 def build_model(
@@ -140,12 +144,12 @@ def build_model(
     if mod == "none":
         conc = FISS_DENSITY[form]
 
-    core = _core_material(form, conc)
+    core = _core_material(form, conc, settings.thermal_scattering)
     materials = [core]
 
     has_reflector = ref != "none" and thk > 0
     if has_reflector:
-        reflector = _water() if ref == "h2o" else _water()
+        reflector = _water(settings.thermal_scattering)
         materials.append(reflector)
 
     core_sphere = openmc.Sphere(r=rad)

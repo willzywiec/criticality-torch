@@ -1,0 +1,25 @@
+# Conda environment for running the full criticality pipeline natively on WSL
+# (or any Linux). OpenMC is not on PyPI, so it -- along with torch and the
+# scientific stack -- comes from conda-forge.
+#
+#   conda env create -f environment.yml
+#   conda activate criticality
+#   pip install -e .
+#
+# For NVIDIA GPU acceleration on WSL2 (CUDA), replace the `pytorch` line with
+# `pytorch-gpu` (conda-forge) and ensure the WSL CUDA driver is installed.
+name: criticality
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - openmc
+  - pytorch        # CPU build; use pytorch-gpu for CUDA on WSL2
+  - numpy
+  - pandas
+  - scipy
+  - matplotlib
+  - pytest
+  - pip
+  - pip:
+      - openmc-data-downloader   # fetches just the nuclides this package needs
