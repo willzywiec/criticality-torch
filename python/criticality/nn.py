@@ -140,7 +140,7 @@ def train_nn(
     dataset: Dataset,
     *,
     batch_size: int = 8192,
-    code: str = "mcnp",
+    code: str = "openmc",
     ensemble_size: int = 5,
     epochs: int = 1500,
     layers: str = "8192-256-256-256-256-16",

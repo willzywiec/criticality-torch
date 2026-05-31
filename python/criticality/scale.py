@@ -74,7 +74,7 @@ def _one_hot(df: pd.DataFrame) -> pd.DataFrame:
 def scale_data(
     output: pd.DataFrame,
     ext_dir: str | Path,
-    code: str = "mcnp",
+    code: str = "openmc",
     dataset: Dataset | None = None,
     *,
     save: bool = True,

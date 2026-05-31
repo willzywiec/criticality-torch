@@ -1,8 +1,9 @@
 """End-to-end smoke test of the torch criticality pipeline on synthetic data.
 
 This exercises every module (scale -> model -> nn/train -> ensemble ->
-bn -> predict -> risk) without needing the real MCNP dataset, which only
-ships as an R ``.RData`` file.
+bn -> predict -> risk) without needing OpenMC, which generates the training
+data but is not pip-installable. The OpenMC data-generation wiring is tested
+separately with the simulation step mocked.
 """
 
 from pathlib import Path
@@ -12,13 +13,20 @@ import pandas as pd
 import pytest
 
 from criticality import (
+    SimSettings,
     build_bn,
     build_model,
     estimate_risk,
+    generate_dataset,
     predict_keff,
+    sample_configs,
     scale_data,
     train_nn,
 )
+import sys
+import criticality.tabulate  # noqa: F401  (ensure submodule is imported)
+
+tabulate_mod = sys.modules["criticality.tabulate"]
 
 
 @pytest.fixture
@@ -58,7 +66,7 @@ def test_scale_split(synthetic_output, tmp_path):
     assert "keff" not in ds.feature_cols and "sd" not in ds.feature_cols
     assert len(ds.training_data) > len(ds.test_data) > 0
     # Cache written.
-    assert (tmp_path / "mcnp-dataset.pkl").exists()
+    assert (tmp_path / "openmc-dataset.pkl").exists()
 
 
 def test_build_model_shapes():
@@ -148,3 +156,49 @@ def test_bn_and_risk(synthetic_output, tmp_path):
         ext_dir=tmp_path, rng=np.random.default_rng(7), verbose=False,
     )
     assert risk.shape == (2,)
+
+
+# --- OpenMC data-generation layer (simulation mocked) ----------------------
+
+def test_sample_configs():
+    cfg = sample_configs(50, seed=0)
+    assert len(cfg) == 50
+    assert set(cfg.columns) == {"mass", "form", "mod", "rad", "ref", "thk"}
+    assert cfg["form"].isin(["alpha", "delta", "puo2", "heu", "uo2"]).all()
+
+
+def test_generate_dataset_mocked(tmp_path, monkeypatch):
+    """generate_dataset() should wire sampling -> simulation -> scaling.
+
+    The OpenMC run is replaced with a cheap synthetic keff so no cross-section
+    data or OpenMC install is needed.
+    """
+    def fake_simulate_dataset(configs, settings=None, *, verbose=True):
+        out = configs.copy()
+        vol = 4 / 3 * np.pi * out["rad"] ** 3
+        out["vol"] = vol
+        out["conc"] = out["mass"] / vol
+        out["keff"] = 0.5 + 0.0015 * out["mass"] + 2.0 * out["conc"]
+        out["sd"] = 0.0005
+        return out
+
+    monkeypatch.setattr(tabulate_mod, "simulate_dataset", fake_simulate_dataset)
+
+    ds = generate_dataset(tmp_path, n=300, settings=SimSettings(particles=10), seed=1)
+    assert (tmp_path / "openmc.csv").exists()
+    assert (tmp_path / "openmc-dataset.pkl").exists()
+    assert ds.training_df.shape[1] == ds.test_df.shape[1]
+    assert len(ds.training_data) > 0
+
+
+def test_run_keff_requires_openmc():
+    """Without OpenMC installed, simulation calls raise a clear error."""
+    pytest.importorskip  # noqa
+    from criticality import run_keff
+
+    try:
+        import openmc  # noqa: F401
+        pytest.skip("OpenMC is installed; skipping the missing-dependency check")
+    except ImportError:
+        with pytest.raises(ImportError, match="OpenMC is required"):
+            run_keff(100, "heu", "none", 8.0, "none", 0.0)

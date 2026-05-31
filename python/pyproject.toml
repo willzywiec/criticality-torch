@@ -20,6 +20,9 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0"]
+# Data generation requires OpenMC, which is not distributed on PyPI. Install it
+# via conda-forge (`conda install -c conda-forge openmc`) or from source and set
+# OPENMC_CROSS_SECTIONS. Training/prediction/risk do not need it.
 
 [tool.setuptools.packages.find]
 where = ["."]
