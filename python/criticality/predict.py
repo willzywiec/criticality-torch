@@ -22,15 +22,7 @@ import torch
 
 from .bn import BayesNet
 from .scale import Dataset, scale_data
-
-# Fissile material density (g/cc) keyed by material form.
-FISS_DENSITY = {
-    "alpha": 19.86,
-    "delta": 15.92,
-    "puo2": 11.5,
-    "heu": 18.85,
-    "uo2": 10.97,
-}
+from .simulate import FISS_DENSITY
 
 
 def _predict(model, x: torch.Tensor) -> np.ndarray:

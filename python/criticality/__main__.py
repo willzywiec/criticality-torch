@@ -16,7 +16,14 @@ from pathlib import Path
 
 import numpy as np
 
-from . import build_bn, estimate_risk, tabulate, train_nn
+from . import (
+    SimSettings,
+    build_bn,
+    estimate_risk,
+    generate_dataset,
+    tabulate,
+    train_nn,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -29,9 +36,16 @@ def build_parser() -> argparse.ArgumentParser:
     g = p.add_argument_group("data / environment")
     g.add_argument("--ext-dir", required=True, help="External data directory (full path).")
     g.add_argument("--training-dir", default=None, help="Training directory (default: <ext-dir>/training).")
-    g.add_argument("--code", default="mcnp", help="Monte Carlo code label.")
+    g.add_argument("--code", default="openmc", help="Monte Carlo code label.")
     g.add_argument("--device", default="cpu", help='Torch device, e.g. "cpu" or "cuda".')
     g.add_argument("--seed", type=int, default=None, help="RNG seed for the train/test split and sampling.")
+
+    g = p.add_argument_group("data generation (OpenMC)")
+    g.add_argument("--simulate", type=int, default=0, metavar="N",
+                   help="Generate the dataset by running OpenMC over N sampled configurations.")
+    g.add_argument("--sim-particles", type=int, default=5000, help="OpenMC particles per batch.")
+    g.add_argument("--sim-batches", type=int, default=130, help="OpenMC total batches.")
+    g.add_argument("--sim-inactive", type=int, default=30, help="OpenMC inactive batches.")
 
     g = p.add_argument_group("metamodel training (NN)")
     g.add_argument("--batch-size", type=int, default=8192)
@@ -67,8 +81,24 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     ext_dir = Path(args.ext_dir)
 
-    print("== Loading dataset ==")
-    dataset = tabulate(code=args.code, ext_dir=ext_dir, seed=args.seed)
+    if args.simulate > 0:
+        print(f"== Generating {args.simulate} configurations with OpenMC ==")
+        dataset = generate_dataset(
+            ext_dir,
+            code=args.code,
+            n=args.simulate,
+            settings=SimSettings(
+                particles=args.sim_particles,
+                batches=args.sim_batches,
+                inactive=args.sim_inactive,
+                seed=args.seed,
+            ),
+            seed=args.seed,
+            verbose=args.verbose,
+        )
+    else:
+        print("== Loading dataset ==")
+        dataset = tabulate(code=args.code, ext_dir=ext_dir, seed=args.seed)
     print(f"   training rows: {len(dataset.training_data)}, "
           f"test rows: {len(dataset.test_data)}, features: {dataset.training_df.shape[1]}")
 
