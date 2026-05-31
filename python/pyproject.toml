@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "criticality"
+version = "0.9.4"
+description = "Modeling fissile material operations in nuclear facilities (Python/torch port)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "William Zywiec", email = "willzywiec@gmail.com" }]
+dependencies = [
+    "torch>=2.0",
+    "numpy>=1.23",
+    "pandas>=1.5",
+    "scipy>=1.9",
+    "matplotlib>=3.6",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["criticality*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
