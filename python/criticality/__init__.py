@@ -36,7 +36,7 @@ from .simulate import (
     simulate_dataset,
 )
 from .simulate import build_model as build_openmc_model
-from .tabulate import generate_dataset, tabulate
+from .tabulate import generate_dataset, simulate_output, tabulate
 
 __all__ = [
     "BayesNet",
@@ -53,6 +53,7 @@ __all__ = [
     "scale_data",
     "tabulate",
     "generate_dataset",
+    "simulate_output",
     "SimSettings",
     "build_openmc_model",
     "run_keff",

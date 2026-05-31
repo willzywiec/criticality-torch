@@ -13,7 +13,7 @@ help:
 	@echo "  data      (Re)download the cross-section library"
 	@echo "  test      Run the pytest suite"
 	@echo "  verify    Run a live OpenMC k-eigenvalue smoke test"
-	@echo "  simulate  Generate a small dataset with OpenMC (N=50 by default)"
+	@echo "  simulate  Generate data with OpenMC in parallel (N=50, generation only)"
 	@echo "  run       Run the full CLI pipeline against EXT_DIR=$(EXT_DIR)"
 	@echo "  clean     Remove caches and generated training artifacts"
 
@@ -29,9 +29,13 @@ test:
 verify:
 	$(RUN) python scripts/verify_openmc.py
 
+# Parallel OpenMC generation only (no training). Override N and WORKERS, e.g.:
+#   make simulate N=16752 WORKERS=16
 N ?= 50
+WORKERS ?=
 simulate:
-	$(RUN) python -m criticality --ext-dir $(EXT_DIR) --simulate $(N) --skip-risk --verbose
+	$(RUN) python -m criticality --ext-dir $(EXT_DIR) --simulate $(N) --simulate-only \
+		$(if $(WORKERS),--sim-workers $(WORKERS),) --verbose
 
 run:
 	$(RUN) python -m criticality --ext-dir $(EXT_DIR)

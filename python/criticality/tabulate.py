@@ -71,22 +71,29 @@ def tabulate(
     return scale_data(_derive_geometry(output), ext_dir=ext_dir, code=code, seed=seed)
 
 
-def generate_dataset(
+def simulate_output(
     ext_dir: str | Path,
     *,
     code: str = "openmc",
     n: int | None = None,
     configs: pd.DataFrame | None = None,
     settings: SimSettings | None = None,
+    max_workers: int | None = None,
     seed: int | None = None,
     verbose: bool = True,
-) -> Dataset:
-    """Generate a dataset by running OpenMC, cache it, and return it.
+) -> Path:
+    """Stage 1 (generation): run the parallel OpenMC series, write ``<code>.csv``.
 
-    Provide either ``n`` (number of random configurations to sample) or an
-    explicit ``configs`` DataFrame with columns ``mass, form, mod, rad, ref,
-    thk``. The raw OpenMC output is written to ``<code>.csv`` and the scaled
-    dataset to ``<code>-dataset.pkl``.
+    This is the data-*generation* half: it executes a large series of OpenMC
+    k-eigenvalue runs in parallel (see :func:`~criticality.simulate_dataset`)
+    and writes the raw labeled output table. Building the scaled training
+    dataset from that output is the job of :func:`tabulate` (stage 2).
+
+    Provide either ``n`` (random configurations to sample) or an explicit
+    ``configs`` DataFrame with columns ``mass, form, mod, rad, ref, thk``.
+
+    Returns:
+        Path to the written ``<code>.csv`` output file.
     """
     ext_dir = Path(ext_dir)
     ext_dir.mkdir(parents=True, exist_ok=True)
@@ -97,6 +104,46 @@ def generate_dataset(
             raise ValueError("provide either 'n' or an explicit 'configs' frame")
         configs = sample_configs(n, seed=seed)
 
-    output = simulate_dataset(configs, settings, verbose=verbose)
-    output.to_csv(ext_dir / f"{code}.csv", index=False)
-    return scale_data(_derive_geometry(output), ext_dir=ext_dir, code=code, seed=seed)
+    out_path = ext_dir / f"{code}.csv"
+    # Stream to disk as runs complete so a long batch survives interruption,
+    # then rewrite once ordered to match the sampled configurations.
+    output = simulate_dataset(
+        configs, settings, max_workers=max_workers,
+        output_csv=out_path, verbose=verbose,
+    )
+    output.to_csv(out_path, index=False)
+
+    # Fresh output invalidates any previously cached scaled dataset so the
+    # training stage rebuilds from this run rather than loading a stale cache.
+    stale_cache = ext_dir / f"{code}-dataset.pkl"
+    if stale_cache.exists():
+        stale_cache.unlink()
+
+    return out_path
+
+
+def generate_dataset(
+    ext_dir: str | Path,
+    *,
+    code: str = "openmc",
+    n: int | None = None,
+    configs: pd.DataFrame | None = None,
+    settings: SimSettings | None = None,
+    max_workers: int | None = None,
+    seed: int | None = None,
+    verbose: bool = True,
+) -> Dataset:
+    """Generate data with OpenMC and build the dataset, in one call.
+
+    Convenience wrapper that runs the parallel generation stage
+    (:func:`simulate_output`) and then the training-pipeline stage
+    (:func:`tabulate`), which builds and caches the scaled
+    ``<code>-dataset.pkl``. Use the two functions separately to run generation
+    and training as independent jobs.
+    """
+    code = code.lower()
+    simulate_output(
+        ext_dir, code=code, n=n, configs=configs, settings=settings,
+        max_workers=max_workers, seed=seed, verbose=verbose,
+    )
+    return tabulate(code=code, ext_dir=ext_dir, seed=seed)

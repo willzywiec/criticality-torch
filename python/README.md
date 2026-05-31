@@ -65,21 +65,40 @@ OpenMC is only needed to **generate** data; training, prediction, and risk run
 on an existing dataset with just torch / numpy / pandas / scipy / matplotlib
 (`pip install -e .`).
 
-## Pipeline at a glance
+## Two stages: generate, then train
+
+Data generation and NN training are separate stages:
+
+1. **Generation** runs a large series of independent OpenMC k-eigenvalue
+   calculations *in parallel* — one run per sampled configuration, fanned out
+   across a process pool (one OpenMC run per worker, single-threaded by
+   default, so the pool saturates all CPU cores). Results stream to
+   `<code>.csv` as each run finishes, so a long batch survives interruption.
+2. **Training** (the NN pipeline) reads that output table, builds the
+   scaled train/test dataset (`<code>-dataset.pkl`), and fits the metamodel.
+
+Run them as one call, or split them into independent jobs:
 
 ```python
 import criticality as cx
 
-# 1. Generate a dataset with OpenMC (sphere geometry -> k-eigenvalue).
-#    Run this once; it caches openmc.csv and openmc-dataset.pkl in ext_dir.
-dataset = cx.generate_dataset(
+# --- Stage 1: parallel OpenMC generation only -> writes extdata/openmc.csv ---
+cx.simulate_output(
     "extdata", n=16752,
     settings=cx.SimSettings(particles=5000, batches=130, inactive=30),
+    max_workers=None,   # default: all CPU cores; set an int to cap workers
 )
-# ...or reload a cached dataset later with:
-# dataset = cx.tabulate(code="openmc", ext_dir="extdata")
 
-# 2. Train an ensemble of DNN metamodels and compute ensemble weights.
+# --- Stage 2: build the dataset from that output (the NN pipeline's input) ---
+dataset = cx.tabulate(code="openmc", ext_dir="extdata")
+
+# Or do both at once (generation + dataset build):
+# dataset = cx.generate_dataset(
+#     "extdata", n=16752,
+#     settings=cx.SimSettings(particles=5000, batches=130, inactive=30),
+# )
+
+# Train an ensemble of DNN metamodels and compute ensemble weights.
 metamodel = cx.train_nn(
     dataset,
     ensemble_size=5,
@@ -92,10 +111,10 @@ metamodel = cx.train_nn(
     device="cuda",          # or "cpu"
 )
 
-# 3. Build the Bayesian network from facility walkthrough data.
+# Build the Bayesian network from facility walkthrough data.
 bn = cx.build_bn("facility.csv", ext_dir="extdata", dist="gamma")
 
-# 4. Estimate process criticality accident risk.
+# Estimate process criticality accident risk.
 risk, samples = cx.estimate_risk(
     bn, metamodel, dataset,
     keff_cutoff=0.9, mass_cutoff=100, rad_cutoff=7,
@@ -107,13 +126,19 @@ risk, samples = cx.estimate_risk(
 ### Or run the whole thing from the CLI
 
 ```bash
-# Simulate 2000 configs with OpenMC, train, build the BN, and estimate risk:
+# Simulate 2000 configs with OpenMC (parallel), train, build the BN, estimate risk:
 python -m criticality --ext-dir extdata --simulate 2000 \
     --ensemble-size 5 --epochs 1500 --device cuda
 
-# Reuse a cached dataset (no --simulate) and just train + estimate risk:
+# Generation only -- run the parallel OpenMC batch and write extdata/openmc.csv:
+python -m criticality --ext-dir extdata --simulate 16752 --simulate-only \
+    --sim-workers 16        # default: all CPU cores; 1 OpenMC thread per run
+
+# Then train (and estimate risk) from that cached output, no re-simulation:
 python -m criticality --ext-dir extdata --facility-data facility.csv
 ```
+
+The `make simulate N=...` target wraps the generate-only path.
 
 ## OpenMC model
 

@@ -23,8 +23,11 @@ Geometry model (matching the R parameterization):
 
 from __future__ import annotations
 
+import csv
 import math
+import os
 import tempfile
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -123,6 +126,7 @@ class SimSettings:
     inactive: int = 30
     seed: int | None = None
     thermal_scattering: bool = True  # set False for a free-gas-only data library
+    threads: int = 1  # OpenMC threads per run; keep 1 when fanning out many runs
 
 
 def build_model(
@@ -187,49 +191,144 @@ def run_keff(
 ) -> tuple[float, float]:
     """Run one OpenMC k-eigenvalue calculation; return ``(keff, sd)``."""
     openmc = _require_openmc()
+    settings = settings or SimSettings()
     model = build_model(mass, form, mod, rad, ref, thk, settings)
     with tempfile.TemporaryDirectory() as run_dir:
-        sp_path = model.run(cwd=run_dir, output=False)
+        # One thread per run by default: when many runs are dispatched across a
+        # process pool, per-run threading would oversubscribe the CPU.
+        sp_path = model.run(cwd=run_dir, output=False, threads=settings.threads)
         with openmc.StatePoint(sp_path) as sp:
             keff = sp.keff
     return float(keff.nominal_value), float(keff.std_dev)
+
+
+OUTPUT_COLUMNS = [
+    "mass", "form", "mod", "rad", "ref", "thk", "vol", "conc", "keff", "sd",
+]
+
+
+def _simulate_one(task: tuple) -> tuple[int, dict, str | None]:
+    """Run a single configuration. Top-level so it is picklable by the pool.
+
+    Returns ``(index, row, error)`` where ``error`` is ``None`` on success. A
+    failed run is reported with NaN ``keff``/``sd`` rather than raised so one
+    bad configuration never aborts a large batch.
+    """
+    idx, mass, form, mod, rad, ref, thk, settings = task
+    vol = 4.0 / 3.0 * math.pi * rad**3
+    row = {
+        "mass": mass, "form": form, "mod": mod, "rad": rad,
+        "ref": ref, "thk": thk, "vol": vol,
+        "conc": mass / vol if vol > 0 else 0.0,
+        "keff": float("nan"), "sd": float("nan"),
+    }
+    try:
+        keff, sd = run_keff(mass, form, mod, rad, ref, thk, settings)
+        row["keff"], row["sd"] = keff, sd
+        return idx, row, None
+    except Exception as exc:  # noqa: BLE001 - keep the batch going
+        return idx, row, str(exc)
+
+
+class _CsvAppender:
+    """Stream completed rows to disk so a long batch survives interruption."""
+
+    def __init__(self, path: Path):
+        self._fh = open(path, "w", newline="", encoding="utf-8")
+        self._writer = csv.DictWriter(self._fh, fieldnames=OUTPUT_COLUMNS)
+        self._writer.writeheader()
+        self._fh.flush()
+
+    def append(self, row: dict) -> None:
+        self._writer.writerow(row)
+        self._fh.flush()
+
+    def close(self) -> None:
+        self._fh.close()
 
 
 def simulate_dataset(
     configs: pd.DataFrame,
     settings: SimSettings | None = None,
     *,
+    max_workers: int | None = None,
+    output_csv: str | Path | None = None,
     verbose: bool = True,
 ) -> pd.DataFrame:
-    """Run OpenMC for each row of ``configs`` and return a labeled output table.
+    """Run a large series of OpenMC calculations, in parallel, over ``configs``.
+
+    Each row is an independent k-eigenvalue calculation dispatched to a worker
+    process (one OpenMC run per task, single-threaded by default), making this
+    embarrassingly parallel across CPU cores.
 
     Args:
         configs: DataFrame with columns ``mass, form, mod, rad, ref, thk``.
-        settings: OpenMC run controls.
+        settings: OpenMC run controls (``settings.threads`` sets threads/run).
+        max_workers: Number of worker processes (default: all CPU cores). Use 1
+            to run inline in the current process (no pool).
+        output_csv: If given, completed rows are streamed here as they finish,
+            so partial progress survives a crash or interruption.
         verbose: Print per-simulation progress.
 
     Returns:
         A DataFrame with the inputs plus derived ``vol``/``conc`` and the
-        simulated ``keff``/``sd`` -- the same schema Tabulate/Scale expect.
+        simulated ``keff``/``sd``, ordered to match ``configs``. Failed runs
+        carry NaN ``keff``/``sd``.
     """
-    rows = []
+    settings = settings or SimSettings()
     n = len(configs)
-    for idx, row in enumerate(configs.itertuples(index=False), start=1):
-        mass, form, mod = float(row.mass), str(row.form), str(row.mod)
-        rad, ref, thk = float(row.rad), str(row.ref), float(row.thk)
-        keff, sd = run_keff(mass, form, mod, rad, ref, thk, settings)
-        vol = 4.0 / 3.0 * math.pi * rad**3
-        rows.append(
-            {
-                "mass": mass, "form": form, "mod": mod, "rad": rad,
-                "ref": ref, "thk": thk, "vol": vol,
-                "conc": mass / vol if vol > 0 else 0.0,
-                "keff": keff, "sd": sd,
-            }
+    if max_workers is None:
+        max_workers = os.cpu_count() or 1
+    max_workers = max(1, min(max_workers, n)) if n else 1
+
+    tasks = [
+        (
+            i, float(r.mass), str(r.form), str(r.mod),
+            float(r.rad), str(r.ref), float(r.thk), settings,
         )
+        for i, r in enumerate(configs.itertuples(index=False))
+    ]
+
+    writer = _CsvAppender(Path(output_csv)) if output_csv is not None else None
+    results: dict[int, dict] = {}
+    failures = 0
+
+    def _record(done: int, idx: int, row: dict, err: str | None) -> None:
+        nonlocal failures
+        results[idx] = row
+        if writer is not None:
+            writer.append(row)
+        if err is not None:
+            failures += 1
         if verbose:
-            print(f"  [{idx}/{n}] {form} mass={mass:.0f}g rad={rad:.2f}cm -> keff={keff:.5f} ± {sd:.5f}")
-    return pd.DataFrame(rows)
+            tag = f"[{done}/{n}]"
+            head = f"{row['form']} mass={row['mass']:.0f}g rad={row['rad']:.2f}cm"
+            if err is None:
+                print(f"  {tag} {head} -> keff={row['keff']:.5f} ± {row['sd']:.5f}")
+            else:
+                print(f"  {tag} {head} -> FAILED: {err}")
+
+    try:
+        if max_workers == 1:
+            # Inline path: no process pool (simpler, and easy to test/mock).
+            for done, task in enumerate(tasks, start=1):
+                idx, row, err = _simulate_one(task)
+                _record(done, idx, row, err)
+        else:
+            with ProcessPoolExecutor(max_workers=max_workers) as pool:
+                futures = [pool.submit(_simulate_one, t) for t in tasks]
+                for done, fut in enumerate(as_completed(futures), start=1):
+                    idx, row, err = fut.result()
+                    _record(done, idx, row, err)
+    finally:
+        if writer is not None:
+            writer.close()
+
+    if failures and verbose:
+        print(f"  {failures}/{n} configurations failed (recorded with NaN keff).")
+
+    ordered = [results[i] for i in range(n)] if n else []
+    return pd.DataFrame(ordered, columns=OUTPUT_COLUMNS)
 
 
 def sample_configs(
