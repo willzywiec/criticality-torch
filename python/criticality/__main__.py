@@ -20,7 +20,7 @@ from . import (
     SimSettings,
     build_bn,
     estimate_risk,
-    generate_dataset,
+    simulate_output,
     tabulate,
     train_nn,
 )
@@ -42,7 +42,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     g = p.add_argument_group("data generation (OpenMC)")
     g.add_argument("--simulate", type=int, default=0, metavar="N",
-                   help="Generate the dataset by running OpenMC over N sampled configurations.")
+                   help="Generate data by running OpenMC over N sampled configurations (in parallel).")
+    g.add_argument("--simulate-only", action="store_true",
+                   help="Run only the generation stage (write <code>.csv) and exit, without training.")
+    g.add_argument("--sim-workers", type=int, default=None, metavar="W",
+                   help="Parallel OpenMC worker processes (default: all CPU cores).")
+    g.add_argument("--sim-threads", type=int, default=1,
+                   help="OpenMC threads per run (keep 1 when fanning out many runs).")
     g.add_argument("--sim-particles", type=int, default=5000, help="OpenMC particles per batch.")
     g.add_argument("--sim-batches", type=int, default=130, help="OpenMC total batches.")
     g.add_argument("--sim-inactive", type=int, default=30, help="OpenMC inactive batches.")
@@ -81,9 +87,14 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     ext_dir = Path(args.ext_dir)
 
+    if args.simulate_only and args.simulate <= 0:
+        build_parser().error("--simulate-only requires --simulate N (N > 0)")
+
     if args.simulate > 0:
-        print(f"== Generating {args.simulate} configurations with OpenMC ==")
-        dataset = generate_dataset(
+        workers = args.sim_workers or "all CPU cores"
+        print(f"== Stage 1: generating {args.simulate} configurations with OpenMC "
+              f"(workers={workers}, {args.sim_threads} thread(s)/run) ==")
+        out_path = simulate_output(
             ext_dir,
             code=args.code,
             n=args.simulate,
@@ -91,11 +102,19 @@ def main(argv: list[str] | None = None) -> int:
                 particles=args.sim_particles,
                 batches=args.sim_batches,
                 inactive=args.sim_inactive,
+                threads=args.sim_threads,
                 seed=args.seed,
             ),
+            max_workers=args.sim_workers,
             seed=args.seed,
             verbose=args.verbose,
         )
+        print(f"   wrote {out_path}")
+        if args.simulate_only:
+            print("== Done (generation only). Re-run without --simulate to train. ==")
+            return 0
+        print("== Stage 2: building dataset from OpenMC output ==")
+        dataset = tabulate(code=args.code, ext_dir=ext_dir, seed=args.seed)
     else:
         print("== Loading dataset ==")
         dataset = tabulate(code=args.code, ext_dir=ext_dir, seed=args.seed)

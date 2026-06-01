@@ -21,8 +21,11 @@ from criticality import (
     predict_keff,
     sample_configs,
     scale_data,
+    simulate_output,
+    tabulate,
     train_nn,
 )
+import criticality as _cr
 import sys
 import criticality.tabulate  # noqa: F401  (ensure submodule is imported)
 
@@ -167,28 +170,93 @@ def test_sample_configs():
     assert cfg["form"].isin(["alpha", "delta", "puo2", "heu", "uo2"]).all()
 
 
+def _fake_simulate_dataset(configs, settings=None, *, max_workers=None,
+                           output_csv=None, verbose=True):
+    """Cheap synthetic stand-in for the OpenMC batch (no cross sections needed)."""
+    out = configs.copy()
+    vol = 4 / 3 * np.pi * out["rad"] ** 3
+    out["vol"] = vol
+    out["conc"] = out["mass"] / vol
+    out["keff"] = 0.5 + 0.0015 * out["mass"] + 2.0 * out["conc"]
+    out["sd"] = 0.0005
+    if output_csv is not None:
+        out.to_csv(output_csv, index=False)
+    return out
+
+
 def test_generate_dataset_mocked(tmp_path, monkeypatch):
-    """generate_dataset() should wire sampling -> simulation -> scaling.
-
-    The OpenMC run is replaced with a cheap synthetic keff so no cross-section
-    data or OpenMC install is needed.
-    """
-    def fake_simulate_dataset(configs, settings=None, *, verbose=True):
-        out = configs.copy()
-        vol = 4 / 3 * np.pi * out["rad"] ** 3
-        out["vol"] = vol
-        out["conc"] = out["mass"] / vol
-        out["keff"] = 0.5 + 0.0015 * out["mass"] + 2.0 * out["conc"]
-        out["sd"] = 0.0005
-        return out
-
-    monkeypatch.setattr(tabulate_mod, "simulate_dataset", fake_simulate_dataset)
+    """generate_dataset() should wire sampling -> simulation -> scaling."""
+    monkeypatch.setattr(tabulate_mod, "simulate_dataset", _fake_simulate_dataset)
 
     ds = generate_dataset(tmp_path, n=300, settings=SimSettings(particles=10), seed=1)
     assert (tmp_path / "openmc.csv").exists()
     assert (tmp_path / "openmc-dataset.pkl").exists()
     assert ds.training_df.shape[1] == ds.test_df.shape[1]
     assert len(ds.training_data) > 0
+
+
+def test_simulate_output_then_tabulate(tmp_path, monkeypatch):
+    """Generation and training stages are separable (generate-only path)."""
+    monkeypatch.setattr(tabulate_mod, "simulate_dataset", _fake_simulate_dataset)
+
+    # Stage 1: generation only -- writes the raw CSV, no scaled dataset yet.
+    out_path = simulate_output(tmp_path, n=300, seed=1)
+    assert out_path == tmp_path / "openmc.csv"
+    assert out_path.exists()
+    assert not (tmp_path / "openmc-dataset.pkl").exists()
+
+    # Stage 2: the training pipeline builds the dataset from that output.
+    ds = tabulate(code="openmc", ext_dir=tmp_path, seed=1)
+    assert (tmp_path / "openmc-dataset.pkl").exists()
+    assert len(ds.training_data) > 0
+
+
+def test_simulate_output_invalidates_stale_cache(tmp_path, monkeypatch):
+    """A fresh generation run drops a stale dataset cache so training rebuilds."""
+    monkeypatch.setattr(tabulate_mod, "simulate_dataset", _fake_simulate_dataset)
+    cache = tmp_path / "openmc-dataset.pkl"
+    cache.write_bytes(b"stale")
+    simulate_output(tmp_path, n=200, seed=2)
+    assert not cache.exists()
+
+
+def test_simulate_dataset_parallel(monkeypatch):
+    """simulate_dataset runs configs through the pool and preserves input order."""
+    # Patch the per-run keff so no OpenMC/cross sections are needed. The worker
+    # imports run_keff from the module, so patch it there; fork carries it.
+    monkeypatch.setattr(
+        _cr.simulate, "run_keff",
+        lambda mass, *a, **k: (0.5 + 0.001 * mass, 0.0001),
+    )
+    cfg = sample_configs(12, seed=7)
+    out = _cr.simulate.simulate_dataset(cfg, max_workers=4, verbose=False)
+    assert len(out) == len(cfg)
+    assert list(out.columns) == _cr.simulate.OUTPUT_COLUMNS
+    # Order matches the input configs (results are re-sorted by index).
+    assert list(out["mass"]) == [float(m) for m in cfg["mass"]]
+    expected = [0.5 + 0.001 * float(m) for m in cfg["mass"]]
+    assert np.allclose(out["keff"].to_numpy(), expected)
+
+
+def test_simulate_dataset_records_failures(monkeypatch):
+    """A failing run is recorded with NaN keff instead of aborting the batch."""
+    def flaky(mass, *a, **k):
+        if mass > 1000:
+            raise RuntimeError("boom")
+        return 0.8, 0.0001
+
+    monkeypatch.setattr(_cr.simulate, "run_keff", flaky)
+    cfg = pd.DataFrame({
+        "mass": [100.0, 2000.0, 300.0], "form": ["heu"] * 3,
+        "mod": ["none"] * 3, "rad": [8.0] * 3,
+        "ref": ["none"] * 3, "thk": [0.0] * 3,
+    })
+    # max_workers=1 keeps the raising call inline so the monkeypatch applies
+    # without relying on fork semantics.
+    out = _cr.simulate.simulate_dataset(cfg, max_workers=1, verbose=False)
+    assert np.isnan(out["keff"].iloc[1])
+    assert not np.isnan(out["keff"].iloc[0])
+    assert not np.isnan(out["keff"].iloc[2])
 
 
 def test_run_keff_requires_openmc():
